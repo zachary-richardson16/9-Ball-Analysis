@@ -1,0 +1,289 @@
+---
+title: "Data Insights"
+author: "Zachary Richardson"
+date: "2024-03-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(corrplot)
+library(ggplot2)
+library(scales)
+library(tidyverse)
+```
+
+```{r}
+## Load data
+data <- read.csv("data.csv")
+head(data)
+```
+
+
+
+
+```{r}
+#data$In_Pocket <- as.factor(data$In_Pocket)
+
+ggplot(data, aes(x = Num_Walls_Cue_Hit, y = Num_Walls_Aimed_Hit, color = as.factor(In_Pocket))) +
+  geom_jitter(alpha = 0.5, width = 0.2, height = 0.2) + 
+  scale_color_manual(values = c("red", "blue")) + 
+  labs(title = "Relationship between Wall Hits and Pocketing Outcome",
+       x = "Number of Walls Cue Ball Hit",
+       y = "Number of Walls Aimed Hit",
+       color = "Ball Pocketed") +
+  # scale_x_discrete(breaks = scales::pretty_breaks(n = 4),
+  #                  labels = scales::label_comma()) +
+  # scale_y_discrete(breaks = scales::pretty_breaks(n = 4),
+  #                  labels = scales::label_comma()) +
+  theme_minimal() +
+  theme(legend.position = "right")
+```
+
+
+
+### Colors
+```{r}
+# ball_color = data.frame(
+#   ball = c(1, 2, 3, 4, 5, 6, 7, 8, 9),
+#   color = c("yellow2", "darkblue", "red", "pink", "orange", "darkgreen", "brown4", "black", "gold")
+# )
+# 
+# data <- data %>%
+#   left_join(ball_color, by = c ("Ball_Aiming" = "ball"))
+```
+
+## Data Insights
+
+## Hypothesis: Do the number of rails hit by the cue ball and target ball relate to the likelihood of making the target ball?
+```{r}
+## Create every model option using number of walls hit
+mod1 <- lm(In_Pocket ~ Num_Walls_Cue_Hit + Num_Walls_Aimed_Hit + Num_Walls_Cue_Hit*Num_Walls_Aimed_Hit, data = data)
+summary(mod1)
+
+mod2 <- lm(In_Pocket ~ Num_Walls_Cue_Hit + Num_Walls_Aimed_Hit, data = data)
+summary(mod2)
+
+mod3 <- lm(In_Pocket ~ Num_Walls_Cue_Hit, data = data)
+summary(mod3)
+
+mod4 <- lm(In_Pocket ~ Num_Walls_Aimed_Hit, data = data)
+summary(mod4)
+```
+
+```{r}
+## Create model using all relative variables to minimize AIC
+mod.empty <- lm(In_Pocket ~ 1, data = data)
+mod.full <- lm(In_Pocket ~  Move_Num + Ball_Aiming + Num_Walls_Cue_Hit + Num_Walls_Aimed_Hit + Other_Made + Scratch + Won + Shot_Type, data = data)
+
+aic.mod.forward <- step(mod.empty, scope = list(upper = mod.full), direction = "both", trace = FALSE)
+## Num_Walls_Aimed_Hit + Shot_Type + Ball_Aiming + Scratch + Num_Walls_Cue_Hit
+
+
+aic.mod.step <- step(mod.empty, scope = list(upper = mod.full), direction = "both", trace = FALSE)
+## Num_Walls_Aimed_Hit + Shot_Type + Ball_Aiming + Scratch + Num_Walls_Cue_Hit
+
+aic.mod.backward <- step(mod.full, direction = "backward", trace = FALSE)
+## Ball_Aiming + Num_Walls_Cue_Hit + Num_Walls_Aimed_Hit + Scratch + Shot_Type
+
+best.model <- "In_Pocket ~ Num_Walls_Aimed_Hit + Num_Walls_Cue_Hit + Shot_Type + Ball_Aiming + Scratch"
+
+summary(aic.mod.backward)
+```
+
+
+## Hypothesis 2: Do players tend to favor one pocket over another?
+```{r}
+## Distribution of pocket used
+pocket_sums <- data.frame(
+  "Pocket" = 1:6,
+  "Total" =  c(sum(data$Pocket_1), sum(data$Pocket_2), sum(data$Pocket_3), sum(data$Pocket_4), sum(data$Pocket_5), sum(data$Pocket_6))
+)
+
+## Balls in each pocket
+ggplot(pocket_sums, aes(x = factor(Pocket), y = Total)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Pocket Number", y = "Total Balls Sunk", title = "Total Balls Sunk in Each Pocket") +
+  theme_minimal()
+
+## Number of balls in pocket by ball number
+pocket_data <- data %>%
+  group_by(Ball_Aiming) %>%
+  summarize("1" = sum(Pocket_1),
+            "2" = sum(Pocket_2),
+            "3" = sum(Pocket_3),
+            "4" = sum(Pocket_4),
+            "5" = sum(Pocket_5),
+            "6" = sum(Pocket_6))
+
+## Convert data to long form
+library(tidyr)
+pool_data_long <- pivot_longer(pocket_data, cols = -Ball_Aiming, names_to = "pocket", values_to = "balls_sunk")
+
+## Plot by ball and color by pocket
+ggplot(pool_data_long, aes(x = factor(Ball_Aiming), y = balls_sunk, fill = pocket)) +
+  geom_bar(stat = "identity", position = "stack", color = "black") +
+  labs(x = "Pool Ball", y = "Number of Balls Sunk", fill = "Pocket") +
+  ggtitle("Number of Balls Sunk in Each Pocket by Ball Number") +
+  theme_minimal() +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+## Hypothesis 3: Is the number of balls pocketed on the break related to the length of the match and win probability of the player
+```{r}
+## Add a variable that determines if a player won the game at some point (meaning not necessarily on that shot, but did they end up winning)
+
+## Create a vector to store the result of each game
+game_results <- numeric(nrow(data))
+
+## Iterate over each unique game
+unique_games <- unique(data$GameID)
+for (game_id in unique_games) {
+  ## Check if any shot in the current game resulted in a win
+  if (any(data$Won[data$GameID == game_id] == 1)) {
+    ## Set the game result to 1 if any shot in the game won
+    game_results[data$GameID == game_id] <- 1
+  } else {
+    ## Otherwise, set the game result to 0
+    game_results[data$GameID == game_id] <- 0
+  }
+}
+
+## Add the new variable "Won Game" to the data frame
+data$Won_Game <- game_results
+
+data$Total_Made <- data$In_Pocket + data$Other_Made
+
+## Add total moves variable
+# Find the maximum move number for each game that resulted in a win
+winning_moves <- aggregate(data$Move_Num[data$Won == 1], by = list(GameID = data$GameID[data$Won == 1]), FUN = max)
+
+# Merge the winning move numbers back into the original dataset
+data <- merge(data, winning_moves, by.x = "GameID", by.y = "GameID", all.x = TRUE)
+
+# Rename the column containing the winning move numbers
+names(data)[which(names(data) == "x")] <- "Total_Moves"
+
+# Replace NA with 0 for games that were not won
+data$Total_Moves[is.na(data$Total_Moves)] <- 0
+
+
+data %>%
+  filter(Shot_Type == "Break") %>%
+  filter(Total_Moves != 0) %>%
+  ggplot(aes(x = Total_Made, y = Total_Moves)) +
+  geom_point() +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 4)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 8)) +
+  labs(x = "Total Balls Pocketed off the Break", y = "Total Moves to Win") +
+  ggtitle("Number of Game Moves by Balls Pocketed off the Break") +
+  theme_minimal()
+
+
+## Determine win probability based on number of balls pocketed off the break
+# Create a vector to store the result for each game
+broke <- numeric(nrow(data))
+
+# Iterate over each unique game
+unique_games <- unique(data$GameID)
+for (game_id in unique_games) {
+  # Check if any shot in the current game has the shot type "break"
+  if (any(data$Shot_Type[data$GameID == game_id] == "Break")) {
+    # Set the value to 1 if the shot type "break" is found in the game
+    broke[data$GameID == game_id] <- 1
+  } else {
+    # Otherwise, set the value to 0
+    broke[data$GameID == game_id] <- 0
+  }
+}
+
+# Add the new variable "Broke" to the data frame
+data$Broke <- broke
+
+break_data <- data %>%
+  filter(Shot_Type == "Break") %>%
+  group_by(GameID) %>%
+  summarize("Won_Game" = mean(Won_Game),
+            "Broke" = mean(Broke),
+            "Total_Moves" = mean(Total_Moves),
+            "Balls_Made_off_Break" = mean(Total_Made))
+
+ggplot(break_data, aes(x = Balls_Made_off_Break, y = Total_Moves, color = as.factor(Won_Game))) +
+  geom_point() +
+  geom_jitter(alpha = 0.5, width = 0.2, height = 0) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 4)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 8)) +
+  labs(x = "Total Balls Pocketed off the Break", y = "Total Moves to Win") +
+  ggtitle("Number of Game Moves by Balls Pocketed off the Break") +
+  theme_minimal()
+
+left <- break_data %>%
+  filter(Won_Game == TRUE) %>%
+  group_by(Balls_Made_off_Break) %>%
+  summarize(Games_Won=n())
+
+right <- break_data %>%
+  filter(Won_Game == FALSE) %>%
+  group_by(Balls_Made_off_Break) %>%
+  summarize(Games_Lost=n())
+
+break_data_summary <- left %>%
+  left_join(right, by = "Balls_Made_off_Break") %>%
+  mutate(Games_Lost = replace(Games_Lost, is.na(Games_Lost), 0)) %>%
+  mutate(Win_Percentage = Games_Won / (Games_Won + Games_Lost))
+
+ggplot(break_data_summary, aes(x = Balls_Made_off_Break, y = Win_Percentage)) +
+  geom_point() +
+  labs(x = "Number of Balls Made on the Break", y = "Proportion of Games Won") +
+  ggtitle("Win Percentage vs. Balls Made on the Break") +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5),
+                     labels = scales::percent_format()) +
+  theme_minimal()
+
+
+## Make model for the win percentage
+break.mod <- lm(Win_Percentage ~ poly(Balls_Made_off_Break, 2), data = break_data_summary)
+summary(break.mod)
+```
+
+
+
+```{r}
+breaks <- data %>%
+  filter(Shot_Type == "Break")
+
+## Game outcomes by number of balls made on the break shot
+data %>%
+  filter(Shot_Type == "Break") %>%
+  ggplot(aes(x = Total_Made, y = Won_Game)) +
+  geom_point() +
+  geom_jitter(width = .1, height = .1) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 4)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 2)) +
+  theme_minimal() +
+  geom_smooth(method = "glm", method.args=list(family="binomial"(link=logit))) +
+  labs(x = "Number of Balls Made on the Break", y = "Won Game") +
+  ggtitle("W/L Outcome of Break Player by Number of Balls Made on the Break") +
+  theme(plot.title = element_text(hjust = .5))
+
+summary(lm(Won_Game ~ Total_Made, data = breaks))
+glm.mod <- glm(Won_Game ~ Total_Made, breaks, family = "binomial")
+summary(glm.mod)
+
+ggplot(break_data_summary, aes(x = Balls_Made_off_Break, y = Win_Percentage)) +
+  geom_point() +
+  labs(x = "Number of Balls Made on the Break", y = "Proportion of Games Won") +
+  ggtitle("Win Percentage vs. Balls Made on the Break") +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5),
+                     labels = scales::percent_format()) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = .5)) +
+  geom_smooth(method = "lm", formula = y~poly(x, 2))
+
+summary(lm(Win_Percentage ~ Balls_Made_off_Break, data = break_data_summary))
+summary(lm(Win_Percentage ~ poly(Balls_Made_off_Break, 2), data = break_data_summary))
+```
+
